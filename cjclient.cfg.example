@@ -1,0 +1,8 @@
+[Keystone]
+host = zinc26.pha.jhu.edu:5000
+tenantname = *****
+username = *****
+password = *****
+
+[CasJobs]
+url = http://dev.sciserver.org/CasJobs
