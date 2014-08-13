@@ -5,4 +5,4 @@ username = *****
 password = *****
 
 [CasJobs]
-url = http://dev.sciserver.org/CasJobs
+url = http://dev.sciserver.org/CasJobs/RestApi

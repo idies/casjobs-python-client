@@ -7,6 +7,7 @@ import argparse
 import urllib.parse
 import json
 import time
+import sys
 
 
 token = None
@@ -27,7 +28,7 @@ def main():
     parser.add_argument('-fo', dest='output', metavar='FILENAME')
     parser.add_argument('-fi', dest='input', metavar='FILENAME')
     parser.add_argument('-j', dest='job_id', metavar='JOB_ID')
-    parser.add_argument('-c', dest='create_table', action="store_true", help="create a new table")
+    parser.add_argument('-c', dest='create_table', action='store_true', help='create a new table')
     config = configparser.ConfigParser()
     config.read('cjclient.cfg')
 
@@ -45,10 +46,10 @@ def main():
         do_status(args)
     elif args.command == 'cancel':
         do_cancel(args)
-    elif args.command == 'job_async':
-        do_job_async(args)
-    elif args.command == 'job_sync':
-        do_job_sync(args)
+    elif args.command == 'submit':
+        do_submit(args)
+    elif args.command == 'submit_wait':
+        do_submit_wait(args)
     else:
         print('Invalid command:', args.command)
 
@@ -58,18 +59,18 @@ def auth_retry(func):
         url = urllib.parse.urlparse(config.get('CasJobs', 'url'))
         conn = http.client.HTTPConnection(url.netloc)
         try:
-            return func(args, url, conn)
+            return func(args, url.path, conn)
         except AuthorizationError:
             update_token_from_keystone()
-            return func(args, url, conn)
+            return func(args, url.path, conn)
     return wrapper
 
 
 @auth_retry
-def do_execute(args, url, conn):
+def do_execute(args, path, conn):
     global token
     request_body = json.dumps({'Query': args.query})
-    conn.request('POST', url.path+'/RestApi/contexts/'+args.context+'/query', request_body,
+    conn.request('POST', path+'/contexts/'+args.context+'/query', request_body,
                  {'Content-Type': 'application/json',
                   'X-Auth-Token': token})
     response = conn.getresponse()
@@ -87,22 +88,24 @@ def do_execute(args, url, conn):
 
 
 @auth_retry
-def do_upload(args, url, conn):
+def do_upload(args, path, conn):
     with open(args.input, 'rt') as f:
         request_body = f.read()
-    conn.request('POST', url.path+'/RestApi/contexts/'+args.context+'/tables/'+args.table, request_body,
+    conn.request('POST', path+'/contexts/'+args.context+'/tables/'+args.table, request_body,
                  {'Content-Type': 'application/json',
                   'X-Auth-Token': token})
     response = conn.getresponse()
     if response.code == 401:
         raise AuthorizationError
-    elif response.code != 200:
+    elif response.code == 200:
+        print('{0} bytes uploaded into {1}'.format(sys.getsizeof(request_body),args.table))
+    else:
         print(response.read().decode())
 
 
 @auth_retry
-def get_job_status(job_id, url, conn):
-    conn.request('GET', url.path+'/RestApi/jobs/'+job_id,
+def get_job_status(job_id, path, conn):
+    conn.request('GET', path+'/jobs/'+job_id,
                  headers={'Content-Type': 'application/json',
                           'Content-Length': '0',
                           'X-Auth-Token': token})
@@ -118,9 +121,9 @@ def do_status(args):
 
 
 @auth_retry
-def submit_job(args, url, conn):
+def submit_job(args, path, conn):
     request_body = json.dumps({'Query': args.query, 'CreateTable': args.create_table, 'TableName': args.table})
-    conn.request('PUT', url.path+'/RestApi/contexts/'+args.context+'/jobs', request_body,
+    conn.request('PUT', path+'/contexts/'+args.context+'/jobs', request_body,
                  {'Content-Type': 'application/json',
                   'X-Auth-Token': token})
     response = conn.getresponse()
@@ -130,11 +133,11 @@ def submit_job(args, url, conn):
         return response.read().decode()
 
 
-def do_job_async(args):
+def do_submit(args):
     print('Job {0} created'.format(submit_job(args)))
 
 
-def do_job_sync(args):
+def do_submit_wait(args):
     job_id = submit_job(args)
     print('Job {0} created\n...'.format(job_id))
     while True:
@@ -146,14 +149,16 @@ def do_job_sync(args):
 
 
 @auth_retry
-def do_cancel(args, url, conn):
-    conn.request('DELETE', url.path+'/RestApi/jobs/'+args.job_id,
+def do_cancel(args, path, conn):
+    conn.request('DELETE', path+'/jobs/'+args.job_id,
                  headers={'Content-Type': 'application/json',
                           'Content-Length': '0',
                           'X-Auth-Token': token})
     response = conn.getresponse()
     if response.code == 401:
         raise AuthorizationError
+    elif response.code == 200:
+        print('Job {0} cancelled'.format(args.job_id))
     else:
         print(response.read().decode())
 
