@@ -6,6 +6,11 @@ import configparser
 import argparse
 import urllib.parse
 import json
+import time
+
+
+token = None
+config = None
 
 
 class AuthorizationError(Exception):
@@ -14,7 +19,6 @@ class AuthorizationError(Exception):
 
 def main():
     global config
-    global token
     parser = argparse.ArgumentParser()
     parser.add_argument('command')
     parser.add_argument('-q', dest='query', metavar='QUERY')
@@ -34,35 +38,36 @@ def main():
 
     args = parser.parse_args()
     if args.command == 'execute':
-        execute(args)
+        do_execute(args)
     elif args.command == 'upload':
-        upload(args)
+        do_upload(args)
     elif args.command == 'status':
-        status(args)
+        do_status(args)
     elif args.command == 'cancel':
-        cancel(args)
-    elif args.command == 'submit':
-        submit(args)
+        do_cancel(args)
+    elif args.command == 'job_async':
+        do_job_async(args)
+    elif args.command == 'job_sync':
+        do_job_sync(args)
     else:
         print('Invalid command:', args.command)
 
 
 def auth_retry(func):
     def wrapper(args):
+        url = urllib.parse.urlparse(config.get('CasJobs', 'url'))
+        conn = http.client.HTTPConnection(url.netloc)
         try:
-            func(args)
+            return func(args, url, conn)
         except AuthorizationError:
             update_token_from_keystone()
-            func(args)
+            return func(args, url, conn)
     return wrapper
 
 
 @auth_retry
-def execute(args):
-    global config
+def do_execute(args, url, conn):
     global token
-    url = urllib.parse.urlparse(config.get('CasJobs', 'url'))
-    conn = http.client.HTTPConnection(url.netloc)
     request_body = json.dumps({'Query': args.query})
     conn.request('POST', url.path+'/RestApi/contexts/'+args.context+'/query', request_body,
                  {'Content-Type': 'application/json',
@@ -82,11 +87,7 @@ def execute(args):
 
 
 @auth_retry
-def upload(args):
-    global config
-    global token
-    url = urllib.parse.urlparse(config.get('CasJobs', 'url'))
-    conn = http.client.HTTPConnection(url.netloc)
+def do_upload(args, url, conn):
     with open(args.input, 'rt') as f:
         request_body = f.read()
     conn.request('POST', url.path+'/RestApi/contexts/'+args.context+'/tables/'+args.table, request_body,
@@ -100,12 +101,8 @@ def upload(args):
 
 
 @auth_retry
-def status(args):
-    global config
-    global token
-    url = urllib.parse.urlparse(config.get('CasJobs', 'url'))
-    conn = http.client.HTTPConnection(url.netloc)
-    conn.request('GET', url.path+'/RestApi/jobs/'+args.job_id,
+def get_job_status(job_id, url, conn):
+    conn.request('GET', url.path+'/RestApi/jobs/'+job_id,
                  headers={'Content-Type': 'application/json',
                           'Content-Length': '0',
                           'X-Auth-Token': token})
@@ -113,15 +110,15 @@ def status(args):
     if response.code == 401:
         raise AuthorizationError
     else:
-        print(response.read().decode())
+        return response.read().decode()
+
+
+def do_status(args):
+    print(get_job_status(args.job_id))
 
 
 @auth_retry
-def submit(args):
-    global config
-    global token
-    url = urllib.parse.urlparse(config.get('CasJobs', 'url'))
-    conn = http.client.HTTPConnection(url.netloc)
+def submit_job(args, url, conn):
     request_body = json.dumps({'Query': args.query, 'CreateTable': args.create_table, 'TableName': args.table})
     conn.request('PUT', url.path+'/RestApi/contexts/'+args.context+'/jobs', request_body,
                  {'Content-Type': 'application/json',
@@ -130,15 +127,26 @@ def submit(args):
     if response.code == 401:
         raise AuthorizationError
     else:
-        print(response.read().decode())
+        return response.read().decode()
+
+
+def do_job_async(args):
+    print('Job {0} created'.format(submit_job(args)))
+
+
+def do_job_sync(args):
+    job_id = submit_job(args)
+    print('Job {0} created\n...'.format(job_id))
+    while True:
+        status = json.loads(get_job_status(job_id))
+        if status['Status'] >= 3:
+            print('Job {0} finished with code {1}'.format(job_id, status['Status']))
+            break
+        time.sleep(5)
 
 
 @auth_retry
-def cancel(args):
-    global config
-    global token
-    url = urllib.parse.urlparse(config.get('CasJobs', 'url'))
-    conn = http.client.HTTPConnection(url.netloc)
+def do_cancel(args, url, conn):
     conn.request('DELETE', url.path+'/RestApi/jobs/'+args.job_id,
                  headers={'Content-Type': 'application/json',
                           'Content-Length': '0',
@@ -157,7 +165,6 @@ def update_token_from_file():
 
 
 def update_token_from_keystone():
-    global config
     global token
     token = keystone_v2.get_token(config.get('Keystone', 'host'),
                                   config.get('Keystone', 'tenantname'),
